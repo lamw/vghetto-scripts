@@ -1402,8 +1402,15 @@ sub printVMSummary {
 							my $vm_disk_path = $disk->diskPath;
 							my $vm_disk_free = prettyPrintData($disk->freeSpace,'B');
 							my $vm_disk_cap = prettyPrintData($disk->capacity,'B');
-							my $vm_perc_free = &restrict_num_decimal_digits((($disk->freeSpace / $disk->capacity) * 100),2);
-							my $perc_string = getColor($vm_perc_free);
+							my ($vm_perc_free, $perc_string) = ();
+							# If the disk is not mounted by the VM, it will show a zero capacity, leading to divide by zero crash when calculating the percent free.
+							if ($disk->capacity != 0) {
+								$vm_perc_free = &restrict_num_decimal_digits((($disk->freeSpace / $disk->capacity) * 100),2);
+								$perc_string = getColor($vm_perc_free);
+							} else {
+								$vm_perc_free = "NaN";
+								$perc_string = "<td bgcolor=\"$red\">NaN %</td>";
+							}
 							$disk_string .= "<td><table border=\"1\" width=100%><tr><td>$vm_disk_path</td><td>$vm_disk_free</td><td>$vm_disk_cap</td>$perc_string</tr></table></td>";
 						}
 						$vmstorageString .= $disk_string;
