@@ -1,5 +1,7 @@
 ﻿<#
 .SYNOPSIS
+    Supports cross vCenter vMotion without shared SSO
+.DESCRIPTION
    This script demonstrates an xVC-vMotion where a running Virtual Machine
    is live migrated between two vCenter Servers which are NOT part of the
    same SSO Domain which is only available using the vSphere 6.0 API.
@@ -9,7 +11,36 @@
 
    This script also supports migrating VMs connected to both a VSS/VDS as well as having multiple vNICs
 
+   This script also supports migrating VMs having multiple disks and specifying different destination datastores.
+
    This script also supports migrating to/from VMware Cloud on AWS (VMC)
+
+.EXAMPLE
+    xMove-VM -VMName myVM -SourceVC $srcVC -DestVC $destVC -DestCred (Get-Credential) -Cluster myCluster -ResourcePool myPool -VMHost esxi1.local -Folder $DestFolder -Datastore ds1,ds2 -VMNetwork nw1,nw2
+
+    Moves a VM with 2 NICs and 2 hard disks on two different datastores between vCenters.
+
+    Setup:
+    $srcVC = Connect-VIServer srcVC.local
+    $destVC = Connect-VIServer destVC.local
+    $DestFolder = get-item 'vis:\destVC.local@443\DC\vm\MyFoldler'
+
+.EXAMPLE
+    $xMoveParams = @{
+        SourceVC = $srcVCName
+        DestVC = $destVCName
+        DestCred = $DestCred
+        Cluster = 'MyCluster'
+        Folder = Get-Folder "MyFolder"
+        ResourcePool = 'Production'
+        VMHost = 'esxi.local'
+        Datastore = @('ds1','ds2')
+        VMNetwork = @('nw1','nw2')
+    }
+    xMove-VM @ToP1xMoveParams -VMName dbb-migrationTest
+
+    Use splatting to specify parameters more easily.
+
 .NOTES
    File Name  : xMove-VM.ps1
    Author     : William Lam - @lamw
@@ -25,80 +56,186 @@
                  -ResourcePool
                  -uppercaseuuid
 
+    Updated by  : dbaileyut
+    Version     : 1.3
+    Descriptoin : Revised parameters to fit PowerShell conventions better
+                  - Helps av
+
 .LINK
     http://www.virtuallyghetto.com/2016/05/automating-cross-vcenter-vmotion-xvc-vmotion-between-the-same-different-sso-domain.html
 .LINK
    https://github.com/lamw
 
 .INPUTS
-   sourceVCConnection, destVCConnection, vm, switchtype, switch,
-   cluster, resourcepool, datastore, vmhost, vmnetworks, $xvctype, $uppercaseuuid
+   System.String[]
+    You can pipe the VM names to the function.
+
 .OUTPUTS
    Console output
 #>
-
 Function xMove-VM {
+    #Requires -Modules @{ModuleName="VMware.VimAutomation.Core"; ModuleVersion="6.0"}
     param(
-    [Parameter(
-        Position=0,
-        Mandatory=$true,
-        ValueFromPipeline=$true,
-        ValueFromPipelineByPropertyName=$true)
-    ]
-    [VMware.VimAutomation.ViCore.Util10.VersionedObjectImpl]$sourcevc,
-    [VMware.VimAutomation.ViCore.Util10.VersionedObjectImpl]$destvc,
-    [String]$vm,
-    [String]$switchtype,
-    [String]$switch,
-    [String]$cluster,
-    [String]$resourcepool,
-    [String]$datastore,
-    [String]$vmhost,
-    [String]$vmnetworks,
-    [Int]$xvctype,
-    [Boolean]$uppercaseuuid
+        # Name of the VM to migrate
+        [Parameter(Mandatory=$true,
+                   Position=0,
+                   ValueFromPipeline=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [Alias('VM')]
+        [String]$VMName,
+        <# 
+            Source vCenter server. If it is not connected, Connect-VIServer will
+            be run.
+        #>
+        [Parameter(Mandatory=$true,
+                   Position=1,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        $SourceVC,
+        <# 
+            Destination vCenter server. If it is not connected, Connect-VIServer will
+            be run.
+        #>
+        [Parameter(Mandatory=$true,
+                   Position=2,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        $DestVC,
+        # Destination vCenter credentials
+        [Parameter(Mandatory=$true,
+                   Position=3,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [Alias('Credential')]
+        [pscredential]$DestCred,
+        <#
+            Destination resource pool. If the name is not unique in
+            vCenter, specify a cluster or run Get-Resource pool to 
+            assign this to a variable.
+        #>
+        [Parameter(Mandatory=$true,
+                   Position=4,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        $ResourcePool,
+        # Destination ESXi host name
+        [Parameter(Mandatory=$true,
+                   Position=5,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [String]$VMHost,
+        <#
+            Destination datastore(s). If multiple datastores are specified, 
+            each disk will be assigned to the datastores specified in order. 
+            Otherwise, all disk will move to a single datastore.
+        #>
+        [Parameter(Mandatory=$true,
+                   Position=6,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [String[]]$Datastore,
+        # Destination port group name(s) in order of network adapters
+        [Parameter(Mandatory=$true,
+                   Position=7,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [String[]]$VMNetwork,
+        # Destination cluster
+        [Parameter(Mandatory=$false,
+                   Position=8,
+                   ValueFromPipeline=$false,
+                   ValueFromPipelineByPropertyName=$true,
+                   ValueFromRemainingArguments=$false)]
+        [String]$Cluster,
+        <#
+            Destination vCenter VM folder. If the name is not unique, 
+            assign it to a variable using Get-Folder and picking the correct one 
+            or use Get-Item and the vis:\ PSDrive to get the folder via its path.
+        #>
+        [Parameter(Mandatory=$false,
+                    Position=9,
+                    ValueFromPipeline=$false,
+                    ValueFromPipelineByPropertyName=$true,
+                    ValueFromRemainingArguments=$false)]
+        $Folder,
+        # Only migrate the compute if the storage is shared
+        [switch]$ComputeOnly,
+        # Use the given vCenter UUID without forcing to upper case
+        [switch]$LowerCaseUUID,
+        <#
+            Specifies that the destination port groups are on a Virtual Standard Switch (VSS) 
+            instead of Virtual Distributed Switch (VDS)
+        #>
+        [switch]$StandardSwitch,
+        # Run asynchronously, does not wait for the task to finish
+        [switch]$Async
     )
 
-    # Retrieve Source VC SSL Thumbprint
-    $vcurl = "https://" + $destVC
-add-type @"
-        using System.Net;
-        using System.Security.Cryptography.X509Certificates;
-
-            public class IDontCarePolicy : ICertificatePolicy {
-            public IDontCarePolicy() {}
-            public bool CheckValidationResult(
-                ServicePoint sPoint, X509Certificate cert,
-                WebRequest wRequest, int certProb) {
-                return true;
-            }
+    function Get-VCObject ($VC) {
+        if ($VC -is [VMware.VimAutomation.ViCore.Util10.VersionedObjectImpl]) {
+            return $VC
+        } elseif ($global:DefaultVIServers.Name -contains "$VC") {
+            return $global:DefaultVIServers | ? {$_.Name -eq "$VC"}
+        } else {
+            return Connect-VIServer "$VC"
         }
-"@
-    [System.Net.ServicePointManager]::CertificatePolicy = new-object IDontCarePolicy
-    # Need to do simple GET connection for this method to work
-    Invoke-RestMethod -Uri $VCURL -Method Get | Out-Null
+    }
 
-    $endpoint_request = [System.Net.Webrequest]::Create("$vcurl")
-    # Get Thumbprint + add colons for a valid Thumbprint
-    $destVCThumbprint = ($endpoint_request.ServicePoint.Certificate.GetCertHashString()) -replace '(..(?!$))','$1:'
+    $SourceVCObj = Get-VCObject $SourceVC
+    if ($SourceVCObj -isnot [VMware.VimAutomation.ViCore.Util10.VersionedObjectImpl]) {
+        Write-Error "Could not get source vCenter connection for `"$SourceVC`""
+        return
+    }
+    $DestVCObj = Get-VCObject $DestVC
+    if ($DestVCObj -isnot [VMware.VimAutomation.ViCore.Util10.VersionedObjectImpl]) {
+        Write-Error "Could not get destination vCenter connection for `"$DestVCObj`""
+        return
+    }
+
+    $DestVCThumbprint = $DestVCObj.Client.ConnectivityService.SslThumbPrint
 
     # Source VM to migrate
-    $vm_view = Get-View (Get-VM -Server $sourcevc -Name $vm) -Property Config.Hardware.Device
+    $VMObj = Get-VM -Server $SourceVCObj -Name $VMName
+    if (-not $VMObj) {
+        Write-Error "Could not get source VM `"$VMName`""
+        return
+    }
+    $vm_view = Get-View ($VMObj) -Property Config.Hardware.Device
 
-    # Dest Datastore to migrate VM to
-    $datastore_view = (Get-Datastore -Server $destVCConn -Name $datastore)
+    # Primary Dest Datastore to migrate VM to
+    $datastore_view = (Get-Datastore -Server $DestVCObj -Name $Datastore[0])
+    if (-not $datastore_view) {
+        Write-Error "Could not get primay destination Datastore VM `"$($Datastore[0])`""
+        return
+    }
 
     # Dest Cluster/ResourcePool to migrate VM to
-    if($cluster) {
-        $cluster_view = (Get-Cluster -Server $destVCConn -Name $cluster)
-        $resource = $cluster_view.ExtensionData.resourcePool
+    if($Cluster) {
+        $rp_view = Get-ResourcePool -Server $DestVCObj -Name $ResourcePool -Location $Cluster
     } else {
-        $rp_view = (Get-ResourcePool -Server $destVCConn -Name $resourcepool)
-        $resource = $rp_view.ExtensionData.MoRef
+        $rp_view = Get-ResourcePool -Server $DestVCObj -Name $ResourcePool
+    }
+    $resource = $rp_view.ExtensionData.MoRef
+
+    if ($resource -isnot [VMware.Vim.ManagedObjectReference]) {
+        Write-Error "Could not get unique destination resource pool. ResurcePool: `"$ResourcePool`" Cluster: `"$Cluster`""
+        return
     }
 
     # Dest ESXi host to migrate VM to
-    $vmhost_view = (Get-VMHost -Server $destVCConn -Name $vmhost)
+    $vmhost_view = (Get-VMHost -Server $DestVCObj -Name $VMHost)
+    if (-not $vmhost_view) {
+        Write-Error "Could not get destnation host `"$VMHost`""
+        return
+    }
 
     # Find all Etherenet Devices for given VM which
     # we will need to change its network at the destination
@@ -112,20 +249,52 @@ add-type @"
 
     # Relocate Spec for Migration
     $spec = New-Object VMware.Vim.VirtualMachineRelocateSpec
-    $spec.datastore = $datastore_view.Id
     $spec.host = $vmhost_view.Id
     $spec.pool = $resource
 
+    if ($Folder) {
+        $FolderObj = $Folder
+        if (-not $FolderObj.ExtensionData.MoRef) {
+            $FolderObj = Get-Folder $Folder -Server $DestVCObj
+        }
+        if ($FolderObj.ExtensionData.MoRef -is [VMware.Vim.ManagedObjectReference]) {
+            $spec.Folder = $FolderObj.ExtensionData.MoRef
+        } else {
+            Write-Error ("Could not get unique destination folder `"$Folder`". " +
+                         "Assign the folder to a varable using Get-Folder and selecting one result or " +
+                         "run Get-Item and use the vis:\ PSDrive to get the folder by its path."
+                        )
+            return
+        }
+    }
+
     # Relocate Spec Disk Locator
-    if($xvctype -eq 1){
-        $HDs = Get-VM -Server $sourcevc -Name $vm | Get-HardDisk
+    $HDs = $VMObj | Get-HardDisk
+    if($ComputeOnly){
+        $i = 0
         $HDs | %{
             $disk = New-Object VMware.Vim.VirtualMachineRelocateSpecDiskLocator
             $disk.diskId = $_.Extensiondata.Key
             $SourceDS = $_.FileName.Split("]")[0].TrimStart("[")
-            $DestDS = Get-Datastore -Server $destvc -name $sourceDS
+            $DestDS = Get-Datastore -Server $DestVCObj -name $sourceDS
             $disk.Datastore = $DestDS.ID
             $spec.disk += $disk
+            if ($i -eq 0) {
+                $spec.datastore = $DestDS.ID
+            }
+        }
+    } else {
+        $spec.datastore = $datastore_view.Id
+        $i = 0
+        if ($Datastore.Count -gt 1) {
+            $HDs | %{
+                $disk = New-Object VMware.Vim.VirtualMachineRelocateSpecDiskLocator
+                $disk.diskId = $_.Extensiondata.Key
+                $DestDS = Get-Datastore -Server $DestVCObj -name $Datastore[$i]
+                $disk.Datastore = $DestDS.ID
+                $spec.disk += $disk
+                $i++
+            }
         }
     }
 
@@ -133,31 +302,32 @@ add-type @"
     # regardless if its within same SSO Domain or not
     $service = New-Object VMware.Vim.ServiceLocator
     $credential = New-Object VMware.Vim.ServiceLocatorNamePassword
-    $credential.username = $destVCusername
-    $credential.password = $destVCpassword
+    $credential.username = $DestCred.UserName
+    $credential.password = $DestCred.GetNetworkCredential().Password
     $service.credential = $credential
+
     # For some xVC-vMotion, VC's InstanceUUID must be in all caps
     # Haven't figured out why, but this flag would allow user to toggle (default=false)
-    if($uppercaseuuid) {
-        $service.instanceUuid = $destVCConn.InstanceUuid
-    } else {
-        $service.instanceUuid = ($destVCConn.InstanceUuid).ToUpper()
+    $service.instanceUuid = ($DestVCObj.InstanceUuid).ToUpper()
+    if($LowerCaseUUID) {
+        $service.instanceUuid = $DestVCObj.InstanceUuid
     }
-    $service.sslThumbprint = $destVCThumbprint
-    $service.url = "https://$destVC"
+
+    $service.sslThumbprint = $DestVCThumbprint
+    $service.url = "https://$DestVCObj"
     $spec.service = $service
 
     # Create VM spec depending if destination networking
     # is using Distributed Virtual Switch (VDS) or
     # is using Virtual Standard Switch (VSS)
     $count = 0
-    if($switchtype -eq "vds") {
+    if(-not $StandardSwitch) {
         foreach ($vmNetworkAdapter in $vmNetworkAdapters) {
             # New VM Network to assign vNIC
-            $vmnetworkname = ($vmnetworks -split ",")[$count]
+            $vmnetworkname = $VMNetwork[$count]
 
             # Extract Distributed Portgroup required info
-            $dvpg = Get-VDPortgroup -Server $destvc -Name $vmnetworkname
+            $dvpg = Get-VDPortgroup -Server $DestVCObj -Name $vmnetworkname
             $vds_uuid = (Get-View $dvpg.ExtensionData.Config.DistributedVirtualSwitch).Uuid
             $dvpg_key = $dvpg.ExtensionData.Config.key
 
@@ -175,7 +345,7 @@ add-type @"
     } else {
         foreach ($vmNetworkAdapter in $vmNetworkAdapters) {
             # New VM Network to assign vNIC
-            $vmnetworkname = ($vmnetworks -split ",")[$count]
+            $vmnetworkname = $VMNetwork[$count]
 
             # Device Change spec for VSS portgroup
             $dev = New-Object VMware.Vim.VirtualDeviceConfigSpec
@@ -188,38 +358,14 @@ add-type @"
         }
     }
 
-    Write-Host "`nMigrating $vmname from $sourceVC to $destVC ...`n"
+    Write-Host "`nMigrating $VMName from $SourceVCObj to $DestVCObj ...`n"
 
     # Issue Cross VC-vMotion
     $task = $vm_view.RelocateVM_Task($spec,"defaultPriority")
-    $task1 = Get-Task -Id ("Task-$($task.value)")
-    $task1 | Wait-Task
+    $task1 = Get-Task -Id ("Task-$($task.value)") -Server $SourceVCObj
+    if ($Async) {
+        return $task1
+    } else {
+        $task1 | Wait-Task
+    }
 }
-
-# Variables that must be defined
-
-$vmname = "TinyVM-2"
-$sourceVC = "vcenter60-1.primp-industries.com"
-$sourceVCUsername = "administrator@vghetto.local"
-$sourceVCPassword = "VMware1!"
-$destVC = "vcenter60-3.primp-industries.com"
-$destVCUsername = "administrator@vghetto.local"
-$destVCpassword = "VMware1!"
-$datastorename = "la-datastore1"
-$resourcepool = "WorkloadRP"
-$vmhostname = "vesxi60-5.primp-industries.com"
-$vmnetworkname = "LA-VM-Network1,LA-VM-Network2"
-$switchname = "LA-VDS"
-$switchtype = "vds"
-$ComputeXVC = 1
-$UppercaseUUID = $false
-
-# Connect to Source/Destination vCenter Server
-$sourceVCConn = Connect-VIServer -Server $sourceVC -user $sourceVCUsername -password $sourceVCPassword
-$destVCConn = Connect-VIServer -Server $destVC -user $destVCUsername -password $destVCpassword
-
-xMove-VM -sourcevc $sourceVCConn -destvc $destVCConn -VM $vmname -switchtype $switchtype -switch $switchname -resourcepool $resourcepool -vmhost $vmhostname -datastore $datastorename -vmnetwork  $vmnetworkname -xvcType $computeXVC -uppercaseuuid $UppercaseUUID
-
-# Disconnect from Source/Destination VC
-Disconnect-VIServer -Server $sourceVCConn -Confirm:$false
-Disconnect-VIServer -Server $destVCConn -Confirm:$false
