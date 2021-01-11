@@ -45,25 +45,42 @@
 
     # Retrieve existing OVF properties from VM
     $vappProperties = $VM.ExtensionData.Config.VAppConfig.Property
+ 
+    $maxKey = ($vappProperties | Measure-Object -Property key -Maximum).Maximum + 1
 
     # Create a new Update spec based on the # of OVF properties to update
     $spec = New-Object VMware.Vim.VirtualMachineConfigSpec
     $spec.vAppConfig = New-Object VMware.Vim.VmConfigSpec
     $propertySpec = New-Object VMware.Vim.VAppPropertySpec[]($ovfChanges.count)
-
+ 
     # Find OVF property Id and update the Update Spec
-    foreach ($vappProperty in $vappProperties) {
-        if($ovfChanges.ContainsKey($vappProperty.Id)) {
-            $tmp = New-Object VMware.Vim.VAppPropertySpec
+    foreach ($property in $ovfChanges.Keys) {
+        $tmp = New-Object VMware.Vim.VAppPropertySpec
+        $tmp.Info = New-Object VMware.Vim.VAppPropertyInfo
+        if($vappProperties.Id.Contains($property)) {
+            $vappProperty = $vappProperties | Where-Object -Property Id -EQ $property
             $tmp.Operation = "edit"
-            $tmp.Info = New-Object VMware.Vim.VAppPropertyInfo
             $tmp.Info.Key = $vappProperty.Key
-            $tmp.Info.value = $ovfChanges[$vappProperty.Id]
-            $propertySpec+=($tmp)
+            $tmp.Info.Id = $vappProperty.Id
+            $tmp.Info.value = $ovfChanges[$property]
+        } else {
+            $tmp.Operation = "add"
+            $tmp.Info.Key = $maxKey
+            $tmp.Info.Type = "string"
+            $tmp.Info.Id = $property
+            $tmp.Info.value = $ovfChanges[$property]
+            $maxKey++
         }
+        $propertySpec+=($tmp)
     }
     $spec.VAppConfig.Property = $propertySpec
 
+    # Changes summary
+    $propertySpec | Select-Object -Property Operation,@{Name="Key"; Expression = {$_.Info.Key}},`
+                                            @{Name="Id"; Expression = {$_.Info.Id}},`
+                                            @{Name="Value"; Expression = {$_.Info.Value}}`
+                  | Out-String -Stream | Write-Debug
+ 
     Write-Host "Updating OVF Properties ..."
     $task = $vm.ExtensionData.ReconfigVM_Task($spec)
     $task1 = Get-Task -Id ("Task-$($task.value)")
