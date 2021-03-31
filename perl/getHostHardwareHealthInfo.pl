@@ -85,7 +85,7 @@ sub checkHosts {
 			&startReportCreation();
 			my $host_views = Vim::find_entity_views(view_type => 'HostSystem');
 			foreach(@$host_views) {
-				&getHardwareHealthInfo($host_view);
+				&getHardwareHealthInfo($_);
 			}
 		}
 	} else {
