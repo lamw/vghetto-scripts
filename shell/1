@@ -1,0 +1,2 @@
+jq is /usr/local/bin/jq
+./list_vmc_nsxt_route_table.sh: line 10: type: 2: not found

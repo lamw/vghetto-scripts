@@ -23,7 +23,7 @@ CSP_ACCESS_TOKEN=$(echo $RESULTS | jq -r .access_token)
 curl -s -X GET -H "Content-Type: application/json" -H "csp-auth-token: ${CSP_ACCESS_TOKEN}" -o SDDC_RESULTS "https://vmc.vmware.com/vmc/api/orgs/${ORGID}/sddcs/${SDDCID}"
 
 NSXT_PROXY_URL=$(cat SDDC_RESULTS|jq -r .resource_config.nsx_api_public_endpoint_url)
-NSXT_ROUTING_TABLE_URL="${NSXT_PROXY_URL}/policy/api/v1/infra/tier-0s/vmc/routing-table?enforcement_point_path=/infra/deployment-zones/default/enforcement-points/vmc-enforcementpoint"
+NSXT_ROUTING_TABLE_URL="${NSXT_PROXY_URL}/policy/api/v1/infra/tier-0s/vmc/routing-table?enforcement_point_path=/infra/sites/default/enforcement-points/vmc-enforcementpoint"
 
 RESULTS=$(curl -s -X GET -H "Content-Type: application/json" -H "csp-auth-token: ${CSP_ACCESS_TOKEN}" ${NSXT_ROUTING_TABLE_URL})
 echo ${RESULTS} | jq
