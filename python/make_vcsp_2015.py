@@ -83,7 +83,7 @@ def _make_items(items, version=1):
 def _dir2item(path, directory, md5_enabled):
     files_items = []
     name = os.path.split(path)[-1]
-    vcsp_type = "vcsp.iso"
+    vcsp_type = "vcsp.file"
     folder = ""
     folder_md5 = ""
     for f in os.listdir(path):
@@ -103,6 +103,8 @@ def _dir2item(path, directory, md5_enabled):
                 m.update(os.path.dirname(p).encode('utf-8'))
             if ".ovf" in p:
                 vcsp_type = "vcsp.ovf"
+            elif ".iso" in p:
+                vcsp_type = "vcsp.iso"
             size = os.path.getsize(p)
             href = "%s/%s" % (directory, f)
             h = ""
