@@ -66,7 +66,7 @@ verify() {
 }
 
 deployvROpsOVA() {
-	#OVFTOOl_BIN=/usr/bin/ovftool
+	#OVFTOOL_BIN=/usr/bin/ovftool
 	OVFTOOL_BIN="/Applications/VMware OVF Tool/ovftool"
 
 	if [ ! -e ${OVFTOOl_BIN} ]; then
