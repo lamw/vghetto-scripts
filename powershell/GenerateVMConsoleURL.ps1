@@ -87,7 +87,7 @@
         $SessionMgr = Get-View $DefaultViserver.ExtensionData.Content.SessionManager
         $Ticket = $SessionMgr.AcquireCloneTicket()
         $VCSSLThumbprint = Get-SSLThumbprint "https://$VCname"
-        $URL = "https://$VCName`:9443/vsphere-client/webconsole.html?vmId=$VMMoref&vmName=$VMname&serverGuid=$VCInstasnceUUID&locale=en_US&host=$VCName`:443&sessionTicket=$Ticket&thumbprint=$VCSSLThumbprint”
+        $URL = "https://$VCName`:9443/vsphere-client/webconsole.html?vmId=$VMMoref&vmName=$VMname&serverGuid=$VCInstasnceUUID&locale=en_US&host=$VCName`:443&sessionTicket=$Ticket&thumbprint=$VCSSLThumbprint"
     }
     $URL
 }
